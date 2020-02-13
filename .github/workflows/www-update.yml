@@ -39,17 +39,15 @@ jobs:
           WWW_TOKEN: ${{ secrets.WWW_TOKEN }}
 
       - name: Update clang-www
-        working-directory: ./clang-www 
         run: |
-          cp -R ../clang/www/. .
-          mkdir -p docs
-          cp -R ../build/tools/clang/docs/html/. docs/
+          cp -R clang/www/. clang-www/
+          mkdir -p clang-www/docs
+          cp -R build/tools/clang/docs/html/. clang-www/docs/
           
       - name: Update lld-www
-        working-directory: ./lld-www
         run: |
-          ls -a ../build/tools/lld/docs/html/
-          cp -R ../build/tools/lld/docs/html/. .
+          ls -a build/tools/lld/docs/html/
+          cp -R build/tools/lld/docs/html/. lld-www/
 
       - name: Push changes to www repos
         run: |
