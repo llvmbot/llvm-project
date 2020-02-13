@@ -9,7 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install Dependencies
-        run: sudo apt-get install ninja-build python3-sphinx
+        run: sudo apt-get install ninja-build
+      # Install using pip so we can get a newer version.
+      - Name: Install sphinx
+        run: sudo pip install sphinx
       - name: Download source code
         uses: llvm/actions/get-llvm-project-src@master
         with:
