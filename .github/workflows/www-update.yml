@@ -48,6 +48,7 @@ jobs:
         run: |
           ls -a build/tools/lld/docs/html/
           cp -R build/tools/lld/docs/html/. lld-www/
+          ls -a lld-www/
 
       - name: Push changes to www repos
         run: |
