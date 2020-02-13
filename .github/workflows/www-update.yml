@@ -5,7 +5,7 @@ on:
         
 jobs:
   clang_www:
-    name: Update clang.llvm.org
+    name: Update website
     runs-on: ubuntu-latest
     steps:
       - name: Install Dependencies
@@ -19,29 +19,45 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake ../llvm -G Ninja -DLLVM_ENABLE_PROJECTS=clang -DLLVM_ENABLE_SPHINX=ON -DSPHINX_WARNINGS_AS_ERRORS=OFF
-          ninja docs-clang-html
+          cmake ../llvm -G Ninja -DLLVM_ENABLE_PROJECTS=clang;lld -DLLVM_ENABLE_SPHINX=ON -DSPHINX_WARNINGS_AS_ERRORS=OFF
+          ninja docs-clang-html docs-lld-html
 
-      - name: Clone clang-www
-        run: git clone https://${WWW_TOKEN}@github.com/llvmbot/clang-www
-        env:
-          WWW_TOKEN: ${{ secrets.WWW_TOKEN }}
-
-      - name: Update local copy of clang-www
-        working-directory: ./clang-www 
-        run: |
-          git rm -r *
-          cp -R ../clang/www/* .
-          mkdir -p docs
-          cp -R ../build/tools/clang/docs/html/* docs/
-
-      - name: Push changes to clang-www repo
-        working-directory: ./clang-www
+      - name: Setup git
         run: |
           git config --global user.name "llvmbot"
           git config --global user.email "llvmbot@llvm.org"
-          git add *
-          if ! git diff --cached --exit-code; then
-            git commit -a -m "Update documentation from commit $GITHUB_SHA"
-            git push origin master:master
-          fi
+
+      - name: Clone and prep website repos
+        run: |
+          for repo in clang-www lld-www; do
+            git clone https://${WWW_TOKEN}@github.com/llvmbot/${repo}
+            pushd ${repo}
+            git rm -r *
+            popd
+          done
+        env:
+          WWW_TOKEN: ${{ secrets.WWW_TOKEN }}
+
+      - name: Update clang-www
+        working-directory: ./clang-www 
+        run: |
+          cp -R ../clang/www/* .
+          mkdir -p docs
+          cp -R ../build/tools/clang/docs/html/* docs/
+          
+      - name: Update lld-www
+        working-directory: ./lld-www
+        run: |
+          cp -R ../build/tools/lld/docs/html/* .
+
+      - name: Push changes to www repos
+        run: |
+          for repo in clang-www lld-www; do
+            pushd ${repo}
+            git add *
+            if ! git diff --cached --exit-code; then
+              git commit -a -m "Update documentation from commit $GITHUB_SHA"
+              git push origin master:master
+            fi
+            popd
+          done
