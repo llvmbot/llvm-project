@@ -54,7 +54,7 @@ jobs:
         run: |
           for repo in clang-www lld-www; do
             pushd ${repo}
-            git add *
+            git add .
             if ! git diff --cached --exit-code; then
               git commit -a -m "Update documentation from commit $GITHUB_SHA"
               git push origin master:master
