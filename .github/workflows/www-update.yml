@@ -22,7 +22,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake ../llvm -G Ninja -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_ENABLE_SPHINX=ON -DSPHINX_WARNINGS_AS_ERRORS=OFF
+          cmake ../llvm -G Ninja -DLLVM_ENABLE_PROJECTS="clang;lld;compiler-rt;libcxx;libcxxabi" -DLLVM_ENABLE_SPHINX=ON -DSPHINX_WARNINGS_AS_ERRORS=OFF
           ninja docs-clang-html docs-lld-html
 
       - name: Setup git
@@ -32,7 +32,7 @@ jobs:
 
       - name: Clone and prep website repos
         run: |
-          for repo in clang-www lld-www; do
+          for repo in clang-www lld-www libcxx-www libcxxabi-www compiler-rt-www; do
             git clone https://${WWW_TOKEN}@github.com/llvmbot/${repo}
             pushd ${repo}
             git rm -r *
@@ -49,13 +49,23 @@ jobs:
           
       - name: Update lld-www
         run: |
-          ls -a build/tools/lld/docs/html/
-          cp -Rv build/tools/lld/docs/html/. lld-www/
-          ls -a lld-www/
+          cp -R build/tools/lld/docs/html/. lld-www/
+          
+      - name: Update libcxx-www
+        run: |
+          cp -R libcxx/www/. libcxx-www/
+          mkdir -p libcxx-www/docs
+          cp -R build/projects/libcxx/docs/html/. libcxx-www/
+          
+      - name: Update libcxxabi-www
+        run: cp -R libcxxabi/www/. libcxxabi-www/
+
+      - name: Update compiler-rt-www
+        run: cp -R compiler-rt/www/. compiler-rt-www/
 
       - name: Push changes to www repos
         run: |
-          for repo in clang-www lld-www; do
+          for repo in clang-www lld-www libcxx-www libcxxabi-www compiler-rt-www; do
             pushd ${repo}
             git add .
             if ! git diff --cached --exit-code; then
