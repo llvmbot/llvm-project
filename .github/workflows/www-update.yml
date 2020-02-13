@@ -19,7 +19,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake ../llvm -G Ninja -DLLVM_ENABLE_PROJECTS=clang;lld -DLLVM_ENABLE_SPHINX=ON -DSPHINX_WARNINGS_AS_ERRORS=OFF
+          cmake ../llvm -G Ninja -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_ENABLE_SPHINX=ON -DSPHINX_WARNINGS_AS_ERRORS=OFF
           ninja docs-clang-html docs-lld-html
 
       - name: Setup git
