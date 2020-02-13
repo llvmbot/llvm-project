@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install Dependencies
-        run: sudo apt-get install ninja-build python3-sphinx
+        run: sudo apt-get install ninja-build
       - name: Install newer version of sphinx
         run: pip install sphinx 
       - name: Download source code
