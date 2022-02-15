@@ -33,7 +33,7 @@ jobs:
     if: >-
         (github.repository == 'llvm/llvm-project') &&
         !startswith(github.event.comment.body, '<!--IGNORE-->') &&
-        contains(github.event.action == 'opened' && github.event.issue.body || github.event.comment.body, '/cherry-pick')
+        contains(env.COMMENT_BODY, '/cherry-pick')
     steps:
       - name: Fetch LLVM sources
         uses: actions/checkout@v2
