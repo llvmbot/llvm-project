@@ -67,6 +67,14 @@ Major New Features
 - ``float.h`` now exposes (in hosted mode) extensions made available from the
   AIX system header.
 
+- Unevaluated lambdas in dependant contexts no longer result in clang crashing.
+  This fixes Issues `50376 < https://github.com/llvm/llvm-project/issues/50376>`_,
+  `54296 < https://github.com/llvm/llvm-project/issues/54296>`_,
+  `51414 < https://github.com/llvm/llvm-project/issues/51414>`_,
+  `51416 < https://github.com/llvm/llvm-project/issues/51416>`_,
+  and `51641 < https://github.com/llvm/llvm-project/issues/51641>`_.
+
+
 Improvements to Clang's diagnostics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
