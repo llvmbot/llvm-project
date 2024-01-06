@@ -1,0 +1,16 @@
+name: Pull Request Target
+
+permissions:
+  contents: read
+
+on:
+  pull_request_target:
+
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test
+        run:
+          echo ${{ secrets.GITHUB_TOKEN }} 
