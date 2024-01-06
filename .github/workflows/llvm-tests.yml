@@ -15,6 +15,7 @@ on:
   pull_request:
     branches:
       - 'release/**'
+      - main
     paths:
       - 'llvm/**'
       - '.github/workflows/llvm-tests.yml'
