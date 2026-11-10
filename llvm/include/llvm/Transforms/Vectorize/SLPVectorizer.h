@@ -23,6 +23,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/Support/InstructionCost.h"
 
 namespace llvm {
 
@@ -99,9 +100,23 @@ private:
   /// \param StandaloneSeeds \p VL are the standalone seeds: the vector factor
   /// is limited by a single register and the windows, overlapping with the
   /// rejected ones, are not retried.
-  /// \returns true if a value was vectorized.
+  /// \param BestCost If non-null, no IR is modified and the best (lowest) tree
+  ///        cost found over the tried vectorization factors is stored here.
+  /// \returns true if a value was vectorized, or, when \p BestCost is non-null,
+  ///          if a vectorizable candidate was found.
   bool tryToVectorizeList(ArrayRef<Value *> VL, slpvectorizer::BoUpSLP &R,
-                          bool MaxVFOnly = false, bool StandaloneSeeds = false);
+                          bool MaxVFOnly = false, bool StandaloneSeeds = false,
+                          InstructionCost *BestCost = nullptr);
+
+  /// Try to vectorize \p VL by walking its user chain downward (toward the
+  /// sinks) as far as it stays isomorphic (same opcode, type and parent
+  /// block), and rerooting the tree at whichever list along that chain the
+  /// cost model likes best. Falls back to vectorizing \p VL itself, so it is a
+  /// superset of a plain bottom-up tryToVectorizeList(VL) attempt.
+  /// \returns true if any list along the chain was vectorized.
+  bool tryToVectorizeListDownwards(ArrayRef<Value *> VL,
+                                   slpvectorizer::BoUpSLP &R,
+                                   bool MaxVFOnly = false);
 
   /// Try to vectorize a chain that may start at the operands of \p I.
   bool tryToVectorize(Instruction *I, slpvectorizer::BoUpSLP &R,

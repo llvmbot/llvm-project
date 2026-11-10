@@ -2261,6 +2261,28 @@ public:
     AnalyzedBundles.clear();
     AnalyzedMinBWVals.clear();
   }
+
+  /// Saves the record of what has already been analyzed in the block and
+  /// restores it on destruction. Building a tree to query its cost updates
+  /// that record just like a real vectorization attempt does, which would
+  /// make a later attempt behave differently; a query has to leave no trace.
+  class AnalyzedStateGuard {
+    BoUpSLP &R;
+    SmallDenseSet<size_t, 8> Bundles;
+    SmallPtrSet<const Value *, 32> Scalars;
+    SmallDenseMap<Value *, unsigned> MinBWVals;
+
+  public:
+    AnalyzedStateGuard(BoUpSLP &R)
+        : R(R), Bundles(R.AnalyzedBundles), Scalars(R.AnalyzedScalars),
+          MinBWVals(R.AnalyzedMinBWVals) {}
+    ~AnalyzedStateGuard() {
+      R.AnalyzedBundles = std::move(Bundles);
+      R.AnalyzedScalars = std::move(Scalars);
+      R.AnalyzedMinBWVals = std::move(MinBWVals);
+    }
+  };
+
   /// Checks if the given value is gathered in one of the nodes.
   bool isAnyGathered(const SmallDenseSet<Value *> &Vals) const {
     return any_of(MustGather, [&](Value *V) { return Vals.contains(V); });
@@ -31165,8 +31187,8 @@ void SLPVectorizerPass::collectSeedInstructions(BasicBlock *BB) {
 }
 
 bool SLPVectorizerPass::tryToVectorizeList(ArrayRef<Value *> VL, BoUpSLP &R,
-                                           bool MaxVFOnly,
-                                           bool StandaloneSeeds) {
+                                           bool MaxVFOnly, bool StandaloneSeeds,
+                                           InstructionCost *BestCost) {
   if (VL.size() < 2)
     return false;
 
@@ -31353,6 +31375,14 @@ bool SLPVectorizerPass::tryToVectorizeList(ArrayRef<Value *> VL, BoUpSLP &R,
 
       LLVM_DEBUG(dbgs() << "SLP: Found cost = " << Cost
                         << " for VF=" << ActualVF << "\n");
+      if (BestCost) {
+        // Cost query only - leave the IR alone and keep scanning the
+        // remaining vectorization factors for a better cost. Unlike MinCost,
+        // which saturates at the threshold, this tracks the real minimum so
+        // that two unprofitable candidates can still be ordered.
+        *BestCost = std::min(*BestCost, Cost);
+        continue;
+      }
       if (Cost < -R.getCostThreshold()) {
         LLVM_DEBUG(dbgs() << "SLP: Vectorizing list at cost:" << Cost << ".\n");
         R.getORE()->emit(OptimizationRemark(SV_NAME, "VectorizedList",
@@ -31376,6 +31406,9 @@ bool SLPVectorizerPass::tryToVectorizeList(ArrayRef<Value *> VL, BoUpSLP &R,
       }
     }
   }
+
+  if (BestCost)
+    return CandidateFound;
 
   if (!Changed && CandidateFound) {
     R.getORE()->emit([&]() {
@@ -36200,6 +36233,165 @@ static bool compareCmp(const VectorizeOptions &Opts, Value *V, Value *V2,
   return IsCompatibility;
 }
 
+/// \returns true if \p I can occupy a lane of the next level of a downward
+/// use-chain walk, judged on its own.
+static bool canBeDownwardChainUser(Instruction *I, const BoUpSLP &R,
+                                   const VectorizeOptions &Opts) {
+  if (R.isDeleted(I))
+    return false;
+  // Only plain, vectorizable users can form the next bundle. insert/extract
+  // bundles in particular can agree on their result type while their operands
+  // do not; those are handled by vectorizeInserts.
+  if (I->isTerminator() ||
+      isa<CallInst, PHINode, InsertElementInst, InsertValueInst,
+          ExtractElementInst, ExtractValueInst>(I))
+    return false;
+  // Choosing a root trades one level's per-lane extracts for the next level's.
+  // Under ReVec a lane is itself a vector, so the extracts become shuffles
+  // whose cost this walk does not model; descending there only builds
+  // redundant shuffle chains.
+  if (I->getType()->isVectorTy())
+    return false;
+  return isValidElementType(
+      getValueType(I, Opts.slp_revec, /*LookThroughCmp=*/true), Opts.slp_revec);
+}
+
+/// \returns true if \p I and \p ReprInst can occupy lanes of the same bundle.
+static bool areDownwardChainSiblings(Instruction *I, Instruction *ReprInst) {
+  if (I->getParent() != ReprInst->getParent() ||
+      I->getOpcode() != ReprInst->getOpcode() ||
+      I->getType() != ReprInst->getType())
+    return false;
+  // Matching result types is not enough for compares: getSameOpcode() asserts
+  // that the operands of the compared instructions have the same type, which
+  // a pure opcode/result-type match does not guarantee.
+  return !isa<CmpInst>(I) ||
+         I->getOperand(0)->getType() == ReprInst->getOperand(0)->getType();
+}
+
+/// Collects into \p UseVL the next level of the isomorphic user chain of \p VL,
+/// i.e. one user of each value in \p VL, such that those users form a bundle
+/// that is a legal vectorization seed. \p ReprInst fixes the opcode, type and
+/// parent block the collected users must agree on.
+/// \returns true if the chain could be extended by one level.
+static bool collectIsomorphicUsers(ArrayRef<Value *> VL, const BoUpSLP &R,
+                                   const VectorizeOptions &Opts,
+                                   Instruction *ReprInst,
+                                   SmallVectorImpl<Value *> &UseVL) {
+  UseVL.clear();
+  SmallPtrSet<Value *, 8> UniqueUsers;
+  for (Value *V : VL) {
+    Instruction *Use = nullptr;
+    for (User *U : V->users()) {
+      auto *I = dyn_cast<Instruction>(U);
+      if (!I || !areDownwardChainSiblings(I, ReprInst) ||
+          !canBeDownwardChainUser(I, R, Opts))
+        continue;
+      // Several values of the bundle may share the same user (e.g. both
+      // operands of one binary operator). Such a user cannot occupy two lanes.
+      if (!UniqueUsers.insert(I).second)
+        continue;
+      // More than one candidate user leaves the next level ambiguous.
+      if (Use)
+        return false;
+      Use = I;
+    }
+    if (!Use)
+      return false;
+    // A value with uses outside the chain keeps its extract wherever the tree
+    // is rooted, so rerooting past it buys less. The extract is priced in by
+    // buildExternalUses(), so this is only a compile-time guard.
+    if (!Opts.slp_downward_allow_multi_use && !V->hasOneUse())
+      return false;
+    UseVL.push_back(Use);
+  }
+  return true;
+}
+
+/// Collects the successive levels of the isomorphic user chain starting at
+/// \p VL into \p Levels, with Levels[0] == \p VL.
+static void
+collectDownwardChain(ArrayRef<Value *> VL, const BoUpSLP &R,
+                     const VectorizeOptions &Opts,
+                     SmallVectorImpl<SmallVector<Value *, 8>> &Levels) {
+  Levels.emplace_back(VL);
+  while (Levels.size() <= Opts.slp_max_downward_levels) {
+    // The first value's users decide the shape of the next level; with
+    // multiple uses allowed, try each of them until one yields a full level.
+    SmallVector<Value *, 8> UseVL;
+    bool Extended = false;
+    for (User *U : Levels.back().front()->users()) {
+      auto *ReprInst = dyn_cast<Instruction>(U);
+      if (!ReprInst || !canBeDownwardChainUser(ReprInst, R, Opts))
+        continue;
+      if (collectIsomorphicUsers(Levels.back(), R, Opts, ReprInst, UseVL)) {
+        Extended = true;
+        break;
+      }
+    }
+    if (!Extended)
+      break;
+    Levels.push_back(std::move(UseVL));
+  }
+}
+
+bool SLPVectorizerPass::tryToVectorizeListDownwards(ArrayRef<Value *> VL,
+                                                    BoUpSLP &R,
+                                                    bool MaxVFOnly) {
+  if (VL.size() <= 1)
+    return false;
+
+  // Walk the isomorphic user chain downward, toward the sinks. Each level is a
+  // candidate root: rooting at a deeper level subsumes the levels above it as
+  // operands of a larger tree.
+  SmallVector<SmallVector<Value *, 8>> Levels;
+  collectDownwardChain(VL, R, *Opts, Levels);
+
+  // With no chain to walk this degenerates into the plain bottom-up attempt.
+  if (Levels.size() == 1)
+    return tryToVectorizeList(VL, R, MaxVFOnly);
+
+  std::optional<unsigned> BestLevel;
+  InstructionCost BestCost = InstructionCost::getMax();
+  {
+    BoUpSLP::AnalyzedStateGuard Guard(R);
+    // The walk reroots a vectorization that would happen anyway, it does not
+    // go looking for new ones. If the seeds themselves are not worth
+    // vectorizing there is nothing to reroot, and descending would instead
+    // start an unrelated bottom-up attempt from a deeper seed - the job of the
+    // main bottom-up walk, which has its own heuristics for it.
+    if (tryToVectorizeList(VL, R, MaxVFOnly, /*StandaloneSeeds=*/false,
+                           &BestCost) &&
+        BestCost < -R.getCostThreshold()) {
+      // Rerooting deeper is not automatically better: it trades this level's
+      // extracts for the deeper level's, which may be more expensive
+      // (extracting pointers rather than mask bits, say). Ask the cost model
+      // which level is the most profitable root rather than greedily taking
+      // the deepest one.
+      BestLevel = 0;
+      for (unsigned Idx = 1, E = Levels.size(); Idx != E; ++Idx) {
+        InstructionCost Cost = InstructionCost::getMax();
+        // On a tie prefer the deeper level: it does everything the shallower
+        // one does and additionally keeps the instructions in between out of
+        // scalar form, which the cost model may well have priced at zero.
+        if (tryToVectorizeList(Levels[Idx], R, MaxVFOnly,
+                               /*StandaloneSeeds=*/false, &Cost) &&
+            Cost <= BestCost) {
+          BestCost = Cost;
+          BestLevel = Idx;
+        }
+      }
+    }
+  }
+  if (!BestLevel)
+    return tryToVectorizeList(VL, R, MaxVFOnly);
+
+  LLVM_DEBUG(dbgs() << "SLP: Rooting the downward use-chain at level "
+                    << *BestLevel << " of " << Levels.size()
+                    << " with cost = " << BestCost << ".\n");
+  return tryToVectorizeList(Levels[*BestLevel], R, MaxVFOnly);
+}
+
 template <typename ItT>
 bool SLPVectorizerPass::vectorizeCmpInsts(
     iterator_range<ItT> CmpInsts, BasicBlock *BB, BoUpSLP &R,
@@ -36255,6 +36447,12 @@ bool SLPVectorizerPass::vectorizeCmpInsts(
         });
         if (ArePossiblyReducedInOtherBlock)
           return false;
+        // Extend the chain downward (toward the compares' users) first; this
+        // reroots the tree deeper and pulls the compares in as operands, and
+        // falls back internally to the bottom-up list vectorization of the
+        // compares themselves.
+        if (Opts->slp_traverse_down_nonvec)
+          return tryToVectorizeListDownwards(Candidates, R, MaxVFOnly);
         return tryToVectorizeList(Candidates, R, MaxVFOnly);
       },
       /*MaxVFOnly=*/true, R);
